@@ -126,6 +126,10 @@ pub enum Message {
     /// Toggle "prevent sleep" — the logind idle inhibitor next to the battery
     /// readout. Holding it keeps the machine from suspending.
     TogglePreventSleep,
+    /// (applet) Retry acquiring the "prevent sleep" inhibitors. At boot the
+    /// applet can start before cosmic-idle or the Wayland session are up, so
+    /// the locks are re-attempted on a timer until the set is complete.
+    RetryPreventSleep,
     /// Launch the companion config app (the applet's gear, when editing is off).
     OpenConfig,
     /// (applet) A status source (D-Bus / pactl) reported new system state for
@@ -1277,6 +1281,27 @@ impl Hub {
                 self.config.save();
                 self.bump_redraw();
             }
+            Message::RetryPreventSleep => {
+                // Only while the toggle is meant to be on. Fill in whichever
+                // locks are still missing (boot-time services may have come up
+                // since the last attempt) and keep retrying until the set is
+                // complete — an incomplete set can leave the screen blanking
+                // while the toggle reads "on".
+                if self.config.settings.prevent_sleep {
+                    match self.prevent_sleep.as_mut() {
+                        Some(held) => held.acquire_missing(),
+                        None => self.prevent_sleep = crate::inhibit::acquire(),
+                    }
+                    let complete = self
+                        .prevent_sleep
+                        .as_ref()
+                        .is_some_and(crate::inhibit::PreventSleep::complete);
+                    self.bump_redraw();
+                    if !complete {
+                        return prevent_sleep_retry_task();
+                    }
+                }
+            }
             Message::Control(id, control, value) => {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
                     let task = inst.module.on_control(&control, value);
@@ -1373,6 +1398,22 @@ impl Hub {
     fn bump_redraw(&mut self) {
         self.redraw_until = Some(std::time::Instant::now() + Duration::from_millis(300));
     }
+
+    /// Whether the "prevent sleep" toggle is meant to be on (per the config).
+    pub fn prevent_sleep_enabled(&self) -> bool {
+        self.config.settings.prevent_sleep
+    }
+}
+
+/// A delayed `RetryPreventSleep` — the backoff loop that fills in whichever
+/// inhibitors are still missing after startup (cosmic-idle, the ScreenSaver
+/// D-Bus service, and the Wayland session can all come up after the applet).
+/// Runs on cosmic's tokio runtime, so the sleep is a real async timer.
+pub fn prevent_sleep_retry_task() -> Task<Message> {
+    Task::future(async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        cosmic::Action::App(Message::RetryPreventSleep)
+    })
 }
 
 /// Flags for the editor. Single-instance activation requires `CosmicFlags`; the

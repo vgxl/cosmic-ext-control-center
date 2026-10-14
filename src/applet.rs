@@ -62,17 +62,23 @@ impl cosmic::Application for Applet {
     }
 
     fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
-        (
-            Applet {
-                core,
-                popup: None,
-                hub: Hub::new(false),
-                popup_is_layer_surface: false,
-                status: StatusSnapshot::default(),
-                token_tx: None,
-            },
-            Task::none(),
-        )
+        let applet = Applet {
+            core,
+            popup: None,
+            hub: Hub::new(false),
+            popup_is_layer_surface: false,
+            status: StatusSnapshot::default(),
+            token_tx: None,
+        };
+        // If "prevent sleep" is on, schedule the retry loop right away: at
+        // boot the applet can start before cosmic-idle / the Wayland session
+        // are ready, and an incomplete inhibitor set blanks the screen anyway.
+        let task = if applet.hub.prevent_sleep_enabled() {
+            crate::app::prevent_sleep_retry_task()
+        } else {
+            Task::none()
+        };
+        (applet, task)
     }
 
     fn on_close_requested(&self, id: Id) -> Option<Message> {

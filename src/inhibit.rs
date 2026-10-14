@@ -3,14 +3,19 @@
 //! Two different things can put the machine to sleep, and neither sees the
 //! other's inhibitor:
 //!
-//! - **System suspend** (logind's idle action) is blocked by a logind `idle`
-//!   inhibitor — a D-Bus call returning an fd; logind holds the lock while the
-//!   client stays connected and the fd is open.
-//! - **Screen blanking** (DPMS off) is done by the compositor (cosmic-comp) on
-//!   its own idle timer, and it does *not* consult logind inhibitors. Blocking
-//!   it needs the `zwp_idle_inhibit_unstable_v1` Wayland protocol — the same
-//!   mechanism video players use — on a live Wayland connection with a mapped
-//!   surface.
+//! - **Screen blanking** (DPMS off) on COSMIC is done by cosmic-idle on its
+//!   own idle timers — it fades the screen out and powers the output down,
+//!   and it neither consults logind inhibitors nor relies on cosmic-comp's
+//!   idle state alone. It honors the `org.freedesktop.ScreenSaver` D-Bus
+//!   inhibit (the channel mpv and most players use) and Wayland idle
+//!   inhibitors surfaced through cosmic-comp
+//!   (`zwp_idle_inhibit_unstable_v1` on a live Wayland connection with a
+//!   mapped surface). We take both, plus the logind lock for other setups.
+//!
+//! - **System suspend** on COSMIC is also driven by cosmic-idle (it runs
+//!   `systemctl suspend` from its own timer), so the screensaver cookie
+//!   blocks it too; the logind inhibitor covers setups where logind's idle
+//!   action is in charge instead.
 //!
 //! Holding both values (and dropping them, or the whole process exiting) is
 //! the entire lifetime management — a crashed applet can't leave the machine
@@ -29,12 +34,16 @@ const DEST: &str = "org.freedesktop.login1";
 const PATH: &str = "/org/freedesktop/login1";
 const IFACE: &str = "org.freedesktop.login1.Manager";
 
+const SS_DEST: &str = "org.freedesktop.ScreenSaver";
+const SS_PATH: &str = "/org/freedesktop/ScreenSaver";
+
 /// An held pair of inhibitors. Keep the value alive: logind releases its lock
 /// when the client disconnects, and the compositor releases the idle inhibit
 /// when our Wayland connection closes.
 pub struct PreventSleep {
     _logind: Option<LogindInhibitor>,
     _wayland: Option<WaylandInhibitor>,
+    _screensaver: Option<ScreensaverInhibitor>,
 }
 
 /// Ask logind for an `idle` inhibitor in `block` mode — the machine will not
@@ -57,6 +66,46 @@ fn logind_acquire() -> Option<LogindInhibitor> {
 struct LogindInhibitor {
     _conn: DbusConnection,
     _fd: OwnedFd,
+}
+
+/// An `org.freedesktop.ScreenSaver` inhibitor cookie. This is the channel
+/// cosmic-idle actually listens on: while any cookie is held it disables BOTH
+/// of its timers — screen-off (fade + DPMS off) and auto-suspend. A logind
+/// inhibitor is *not* consulted by cosmic-idle, so without this cookie (or a
+/// Wayland idle-inhibitor) the screen still blanks on COSMIC even with logind
+/// held. mpv and most players inhibit through this same interface.
+struct ScreensaverInhibitor {
+    _conn: DbusConnection,
+    cookie: u32,
+}
+
+impl Drop for ScreensaverInhibitor {
+    fn drop(&mut self) {
+        // Best effort: cosmic-idle also drops the cookie when this connection
+        // goes away, but un-inhibit explicitly so the lock is gone immediately.
+        let _ = self._conn.call_method(
+            Some(SS_DEST),
+            SS_PATH,
+            Some(SS_DEST),
+            "UnInhibit",
+            &(self.cookie,),
+        );
+    }
+}
+
+fn screensaver_acquire() -> Option<ScreensaverInhibitor> {
+    let conn = DbusConnection::session().ok()?;
+    let reply = conn
+        .call_method(
+            Some(SS_DEST),
+            SS_PATH,
+            Some(SS_DEST),
+            "Inhibit",
+            &("Cosmic Ext Control Center", "Prevent sleep is on"),
+        )
+        .ok()?;
+    let cookie = reply.body().deserialize::<u32>().ok()?;
+    Some(ScreensaverInhibitor { _conn: conn, cookie })
 }
 
 /// A mapped 1×1 surface with an idle inhibitor attached: while this
@@ -234,15 +283,61 @@ noop_dispatch!(
     zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1
 );
 
-/// Acquire both inhibitors. Whichever lock source is available is held; the
-/// toggle reads as "on" as long as the returned value lives. `None` only when
-/// neither logind nor the compositor could be reached.
+impl PreventSleep {
+    /// Whether every lock source is currently held. On COSMIC the screensaver
+    /// cookie and the Wayland inhibitor are the ones that actually block
+    /// screen-off, so a partially-held set can leave the screen blanking even
+    /// though the toggle reads "on".
+    pub fn complete(&self) -> bool {
+        self._logind.is_some() && self._wayland.is_some() && self._screensaver.is_some()
+    }
+
+    /// (Re-)acquire whichever locks are missing, logging the failures. Called
+    /// right after startup — at boot the applet can come up before cosmic-idle
+    /// (the ScreenSaver D-Bus service) or the Wayland session are ready, so a
+    /// one-shot acquire would leave the toggle on with locks missing forever.
+    pub fn acquire_missing(&mut self) {
+        if self._logind.is_none() {
+            self._logind = match logind_acquire() {
+                Some(l) => Some(l),
+                None => {
+                    eprintln!("prevent-sleep: logind inhibitor unavailable");
+                    None
+                }
+            };
+        }
+        if self._wayland.is_none() {
+            self._wayland = match wayland_acquire() {
+                Some(w) => Some(w),
+                None => {
+                    eprintln!("prevent-sleep: Wayland idle-inhibitor unavailable");
+                    None
+                }
+            };
+        }
+        if self._screensaver.is_none() {
+            self._screensaver = match screensaver_acquire() {
+                Some(s) => Some(s),
+                None => {
+                    eprintln!("prevent-sleep: org.freedesktop.ScreenSaver inhibitor unavailable");
+                    None
+                }
+            };
+        }
+    }
+}
+
+/// Acquire every lock source that answers. Whichever locks are available are
+/// held; the toggle reads as "on" as long as the returned value lives. `None`
+/// only when nothing at all could be reached — each failing leg is logged so a
+/// silent partial failure can't hide behind a lit toggle.
 pub fn acquire() -> Option<PreventSleep> {
-    let logind = logind_acquire();
-    let wayland = wayland_acquire();
-    if logind.is_none() && wayland.is_none() {
+    let mut held = PreventSleep { _logind: None, _wayland: None, _screensaver: None };
+    held.acquire_missing();
+    if held._logind.is_none() && held._wayland.is_none() && held._screensaver.is_none() {
+        eprintln!("prevent-sleep: no inhibitor could be acquired at all");
         None
     } else {
-        Some(PreventSleep { _logind: logind, _wayland: wayland })
+        Some(held)
     }
 }
