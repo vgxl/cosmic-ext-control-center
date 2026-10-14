@@ -287,7 +287,7 @@ impl MediaModule {
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .content_fit(ContentFit::Fill)
-                    .opacity(0.40);
+                    .opacity(0.40_f32);
                 Stack::new().push(inner).push_under(backdrop).into()
             }
             None => inner.into(),
@@ -356,7 +356,7 @@ impl Module for MediaModule {
                     Message::Control(id, "seek".into(), ControlValue::Float(f as f64))
                 })
                 .on_release(Message::Control(id, "seek_commit".into(), ControlValue::Trigger))
-                .step(0.001)
+                .step(0.001_f32)
                 .width(Length::Fill)
                 .into()
             };

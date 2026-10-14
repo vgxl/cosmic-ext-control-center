@@ -1,11 +1,13 @@
 # cosmic-ext-control-center
 
-> **Status: not actively maintained.** I've moved my desktop off COSMIC, so I'm no
-> longer using or updating this. **0.1.5 is the final release from me.** What's
-> here works, but the things listed as planned below (D-Bus and HTTP plugin
-> actions, native-looking plugin tiles, per-module layout polish) are not coming
-> from me. If you'd like to take the project over, open an issue and it's yours.
-> Check out [THIS](https://github.com/jjnuthuagen/cosmic-control-center-applet) for a replacement.
+> [!NOTE]
+> **This is a community continuation.** The original author
+> ([Pyxyll](https://github.com/vgxl/cosmic-ext-control-center)) has moved off
+> COSMIC and stopped maintaining the project after 0.1.5. This fork picks the
+> project up: it adds a "prevent sleep" toggle, real-time volume/microphone
+> sync, COSMIC over-amplification support, and several audio drag fixes (see
+> [Changes over upstream](#changes-over-upstream)). Issues and PRs are welcome.
+> 中文说明见 [README.zh-CN.md](README.zh-CN.md)。
 
 A modular control center for the [COSMIC](https://system76.com/cosmic) desktop.
 
@@ -35,7 +37,9 @@ editor window where you add, remove, reorder, and resize tiles from the palette.
 
 ## Modules
 
-Volume, Microphone, Media (MPRIS), Wi-Fi (SSID and link rate), VPN, Bluetooth,
+Volume (follows the system's amplification switch: 100% normally, up to 150%
+when it's on), Microphone, Media (MPRIS), Wi-Fi (SSID and link rate), VPN,
+Bluetooth,
 Airplane mode, Power profile, Appearance (light/dark), CPU/GPU/RAM/Disk gauges,
 a combined system monitor, battery readout, a notification center, Do Not
 Disturb, section divider, and session/power actions (lock, sleep, log out,
@@ -52,16 +56,24 @@ paru -S cosmic-ext-control-center        # or your preferred AUR helper
 ### Debian and Fedora (prebuilt)
 
 Download the `.deb` or `.rpm` from the
-[latest release](https://github.com/Pyxyll/cosmic-ext-control-center/releases/latest)
+[latest release](https://github.com/vgxl/cosmic-ext-control-center/releases/latest)
 and install it with your package manager. A static-binary `.tar.gz` is also
 attached for other distributions.
+
+### Local build over an installed package
+
+For trying changes on a machine that already has the package installed:
+
+```sh
+sudo bash install-local.sh    # builds release, installs to /usr/local, restarts the applet
+```
 
 ### From source
 
 Needs the Rust toolchain and [`just`](https://github.com/casey/just).
 
 ```sh
-git clone https://github.com/Pyxyll/cosmic-ext-control-center
+git clone https://github.com/vgxl/cosmic-ext-control-center
 cd cosmic-ext-control-center
 sudo just install                    # builds release and installs to /usr
 ```
@@ -73,6 +85,30 @@ Uninstall with `sudo just uninstall`.
 In a COSMIC session, go to Settings > Desktop > Panel (or Dock) > Add applet >
 Control Center. Click the panel icon to open the popup. The gear opens the
 editor, which also shows up in your app launcher as "Control Center".
+
+## Changes over upstream
+
+This fork continues from 0.1.5. What it adds or fixes:
+
+- **Prevent sleep toggle** — a coffee-cup button next to the battery readout
+  holds both a logind `idle` inhibitor (system suspend) and a Wayland
+  `zwp_idle_inhibit_v1` inhibitor (cosmic-comp ignores logind inhibitors when it
+  blanks the screen, so blocking screen-off needs the protocol directly). The
+  toggle is persisted and re-acquired on startup.
+- **Real-time volume/microphone sync** — `pactl subscribe` events refresh the
+  audio tiles within milliseconds of a volume-key press or a change made in
+  another app, instead of waiting for the next poll.
+- **COSMIC over-amplification** — the volume slider's ceiling follows the
+  system's amplification switch (100% normally, up to 150% when it's on),
+  draws the 100% breakpoint on the slider, and tints the percentage readout
+  with the accent color past 100%.
+- **Fixed audio drag races** — a slider drag used to leave several `wpctl`
+  writes racing, and the last one to *finish* (not the last asked for) won, so
+  the sink could land on a level the slider didn't show. Only the newest write
+  stays in flight now, and polls that read the device before a write are
+  ignored for a short grace window.
+- **Popup opens in sync** — the popup refreshes its state on the first frame
+  instead of showing whatever was true when it last closed.
 
 ## Plugins
 

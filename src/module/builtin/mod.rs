@@ -23,7 +23,8 @@ use crate::theme;
 use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget;
-use std::process::Command;
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 pub use airplane::AirplaneModule;
 pub use appearance::AppearanceModule;
 pub use bluetooth::BluetoothModule;
@@ -324,14 +325,36 @@ fn level_icon<'a>(
     }
 }
 
+/// The 100% tick drawn on a slider that can amplify past it.
+const BOOST_MARK: [f32; 1] = [1.0];
+
+/// The slider's percentage readout. Tinted with the accent once the level is
+/// boosted past 100%, so amplification reads as deliberate, not as a cap.
+fn pct_text<'a>(pct: String, boosted: bool) -> Element<'a, Message> {
+    let t = widget::text::caption(pct);
+    // `class` (not `color`) because this libcosmic's Text needs a style class
+    // for the cosmic theme. Both arms stay a `Text`.
+    let t = if boosted {
+        t.class(cosmic::style::Text::Custom(theme::accent_text))
+    } else {
+        t
+    };
+    t.into()
+}
+
 /// A level control (volume / mic / brightness): 1col = compact icon + %, 2col+
 /// = a single inline row of icon + slider + %. The icon doubles as a mute
 /// toggle when `mute` is set. Inert in edit mode. Intentionally has **no card
 /// background** — it sits directly on the hub surface.
+///
+/// `max` is the slider's full scale: 1.0 for an ordinary level, 1.5 for the
+/// volume tile, which adapts COSMIC's over-amplification (up to 150%) and marks
+/// the 100% breakpoint. `value` is expected to lie within `0.0..=max`.
 pub(crate) fn slider_tile<'a>(
     id: InstanceId,
     width: f32,
     value: f32,
+    max: f32,
     icon: &str,
     pct: String,
     value_control: &'static str,
@@ -339,6 +362,8 @@ pub(crate) fn slider_tile<'a>(
     edit: bool,
 ) -> Element<'a, Message> {
     let cols = cols_for_width(width);
+    // Past 100% the reading is an amplifier warning, so it wears the accent.
+    let boosted = max > 1.0 && value > 1.0;
 
     // Bare wrapper: keeps the grid width + horizontal padding, but no card and
     // only a little vertical padding (these are bgless rows — full card padding
@@ -357,7 +382,7 @@ pub(crate) fn slider_tile<'a>(
                 .spacing(4)
                 .align_x(Alignment::Center)
                 .push(level_icon(id, icon, mute, edit, 22))
-                .push(widget::text::caption(pct))
+                .push(pct_text(pct, boosted))
                 .into(),
         );
     }
@@ -370,15 +395,21 @@ pub(crate) fn slider_tile<'a>(
     let s: Element<'a, Message> = if edit {
         // Width/girth must go on the Linear itself; it defaults to a fixed 100px
         // width + thin girth, and a container wrapper does NOT stretch it.
-        widget::progress_bar::determinate_linear(value)
+        // The edit-mode bar shares the slider's full scale, so a boosted level
+        // fills it the same way the applet's handle sits on it.
+        widget::progress_bar::determinate_linear(value / max)
             .width(Length::Fill)
             .girth(Length::Fixed(6.0))
             .into()
     } else {
-        widget::slider(0.0..=1.0, value, on_change)
-            .step(0.01)
-            .width(Length::Fill)
-            .into()
+        let slider = widget::slider(0.0..=max, value, on_change)
+            .step(0.01_f32)
+            .width(Length::Fill);
+        if max > 1.0 {
+            slider.breakpoints(&BOOST_MARK).into()
+        } else {
+            slider.into()
+        }
     };
     bare(
         widget::Row::new()
@@ -386,7 +417,7 @@ pub(crate) fn slider_tile<'a>(
             .align_y(Alignment::Center)
             .push(level_icon(id, icon, mute, edit, 24))
             .push(s)
-            .push(widget::text::caption(pct))
+            .push(pct_text(pct, boosted))
             .into(),
     )
 }
@@ -434,6 +465,62 @@ pub(crate) fn run(cmd: &str) {
         return;
     }
     let _ = Command::new("sh").arg("-c").arg(cmd).spawn();
+}
+
+// --- audio write coalescing ----------------------------------------------
+// A slider issues a write per step while it is dragged. Left as plain
+// fire-and-forget, those processes race and the *last one to finish* — not the
+// last one asked for — decides the device, so the sink/source ends up on a
+// level the slider doesn't show. The two helpers below keep exactly one write
+// in flight and stop a poll from undoing it.
+
+/// How long after a write a polled reading may still predate it. `wpctl` only
+/// takes a few milliseconds, but a poll already in flight can have read the
+/// device *before* the write landed; without this the stale numbers snap the
+/// slider back under the user's finger.
+pub(crate) const WRITE_GRACE: Duration = Duration::from_millis(500);
+
+/// Whether a polled reading should be ignored because we wrote the device after
+/// that poll's read began.
+pub(crate) fn poll_is_stale(last_write: Option<Instant>) -> bool {
+    last_write.is_some_and(|t| t.elapsed() < WRITE_GRACE)
+}
+
+/// Spawn a fire-and-forget write into `slot`, superseding the previous write for
+/// the same control while it is still in flight. A writer that already finished
+/// is left alone: it wrote first and the new one writes after, so the order
+/// stays right. A live one is killed and reaped off-thread, so the UI thread
+/// never waits on it. Callers keep separate slots per control, so a mute click
+/// and a drag can't cancel each other.
+pub(crate) fn write_superseding(slot: &mut Option<Child>, mut cmd: Command) {
+    if preview() {
+        return;
+    }
+    if let Some(mut prev) = slot.take() {
+        if prev.try_wait().ok().flatten().is_none() {
+            let _ = prev.kill();
+            std::thread::spawn(move || {
+                let _ = prev.wait();
+            });
+        }
+    }
+    if let Ok(child) = cmd.spawn() {
+        *slot = Some(child);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_recent_write_makes_the_poll_stale() {
+        assert!(poll_is_stale(Some(Instant::now())));
+        assert!(!poll_is_stale(None));
+        assert!(!poll_is_stale(Some(
+            Instant::now() - WRITE_GRACE - Duration::from_millis(1)
+        )));
+    }
 }
 
 use crate::module::Payload;

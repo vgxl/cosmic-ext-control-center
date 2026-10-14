@@ -232,6 +232,15 @@ pub trait Module {
         }
     }
 
+    /// Whether this module mirrors the system audio mixer, so the hub refreshes
+    /// it the moment the mixer reports a change (`pactl subscribe`) instead of
+    /// waiting for the next poll — a volume-key press should show up at once.
+    /// True for the audio tiles; the hub also uses it to decide whether the
+    /// mixer event source is worth running at all.
+    fn follows_mixer(&self) -> bool {
+        false
+    }
+
     /// A user-initiated refresh (the drawer's refresh button). Defaults to the
     /// normal `refresh`; modules can override to do a deeper scan — e.g. Wi-Fi
     /// forces a real rescan instead of re-reading the cached network list.

@@ -7,6 +7,8 @@
 pub mod app;
 pub mod applet;
 pub mod config;
+pub mod inhibit;
+pub mod mixer;
 pub mod module;
 pub mod notifications;
 pub mod plugins;

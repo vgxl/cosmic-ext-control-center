@@ -57,6 +57,15 @@ pub fn dim_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
     }
 }
 
+/// Accent-coloured caption, for a value that should stand out — used by the
+/// volume tile once its level is amplified past 100%.
+pub fn accent_text(theme: &cosmic::Theme) -> cosmic::iced::widget::text::Style {
+    cosmic::iced::widget::text::Style {
+        color: Some(theme.cosmic().accent_color().into()),
+        ..Default::default()
+    }
+}
+
 /// Linearly interpolate two colours (used for animated highlights).
 pub fn mix(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);

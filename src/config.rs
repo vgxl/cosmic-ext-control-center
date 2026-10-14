@@ -54,6 +54,10 @@ pub struct Settings {
     /// layout — the popup still exposes everything).
     #[serde(default)]
     pub cluster: ClusterIcons,
+    /// "Prevent sleep" toggle — restored (and the inhibitors re-acquired) on
+    /// startup, so a reboot doesn't silently drop the lock.
+    #[serde(default)]
+    pub prevent_sleep: bool,
 }
 
 /// Per-indicator visibility for the panel status cluster. All on by default.

@@ -276,7 +276,13 @@ impl cosmic::Application for Applet {
                     .max_width(POPUP_WIDTH + 40.0)
                     .min_height(200.0)
                     .max_height(900.0);
-                get_popup(settings)
+                Task::batch([
+                    get_popup(settings),
+                    // Sync live state the moment the popup opens: the 2s poll
+                    // keeps it fresh while open, but the first frame shouldn't
+                    // show whatever was true when it last closed.
+                    cosmic::task::message(Message::Poll),
+                ])
             }
             // Global shortcut: a layer surface (no input serial needed, unlike a
             // grabbing popup — that's why an external trigger can open it).
@@ -292,17 +298,21 @@ impl cosmic::Application for Applet {
                 // cosmic-comp, but spanning the top (LEFT|RIGHT) does. So span the
                 // top and right-align the content in `view_window` so the card
                 // lands top-right, near the applet.
-                get_layer_surface(SctkLayerSurfaceSettings {
-                    id: new_id,
-                    keyboard_interactivity: KeyboardInteractivity::OnDemand,
-                    anchor: layer_surface::Anchor::TOP
-                        | layer_surface::Anchor::LEFT
-                        | layer_surface::Anchor::RIGHT,
-                    namespace: "cosmic-ext-control-center".into(),
-                    size: Some((None, Some(860))),
-                    size_limits: Limits::NONE.min_width(1.0).min_height(1.0),
-                    ..Default::default()
-                })
+                Task::batch([
+                    get_layer_surface(SctkLayerSurfaceSettings {
+                        id: new_id,
+                        keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                        anchor: layer_surface::Anchor::TOP
+                            | layer_surface::Anchor::LEFT
+                            | layer_surface::Anchor::RIGHT,
+                        namespace: "cosmic-ext-control-center".into(),
+                        size: Some((None, Some(860))),
+                        size_limits: Limits::NONE.min_width(1.0).min_height(1.0),
+                        ..Default::default()
+                    }),
+                    // Same immediate sync as the panel-click popup.
+                    cosmic::task::message(Message::Poll),
+                ])
             }
             other => self.hub.update(other),
         }

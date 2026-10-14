@@ -39,9 +39,9 @@
     </p>
   </description>
 
-  <url type="homepage">https://github.com/Pyxyll/cosmic-ext-control-center</url>
-  <url type="bugtracker">https://github.com/Pyxyll/cosmic-ext-control-center/issues</url>
-  <url type="vcs-browser">https://github.com/Pyxyll/cosmic-ext-control-center</url>
+  <url type="homepage">https://github.com/vgxl/cosmic-ext-control-center</url>
+  <url type="bugtracker">https://github.com/vgxl/cosmic-ext-control-center/issues</url>
+  <url type="vcs-browser">https://github.com/vgxl/cosmic-ext-control-center</url>
 
   <launchable type="desktop-id">com.pyxyll.CosmicExtControlCenter.desktop</launchable>
 
@@ -85,7 +85,7 @@
           "cosmic-ext-control-center-applet --toggle".</li>
         </ul>
       </description>
-      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.4</url>
+      <url>https://github.com/vgxl/cosmic-ext-control-center/releases/tag/v0.1.4</url>
     </release>
     <release version="0.1.3" date="2026-06-19">
       <description>
@@ -106,7 +106,7 @@
           software rendering, and the network list rows are lighter to draw.</li>
         </ul>
       </description>
-      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.3</url>
+      <url>https://github.com/vgxl/cosmic-ext-control-center/releases/tag/v0.1.3</url>
     </release>
     <release version="0.1.2" date="2026-06-15">
       <description>
@@ -118,7 +118,7 @@
         follows the system accent colour; and module data is fetched off the UI
         thread for a smoother popup.</p>
       </description>
-      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.2</url>
+      <url>https://github.com/vgxl/cosmic-ext-control-center/releases/tag/v0.1.2</url>
     </release>
     <release version="0.1.1" date="2026-06-13">
       <description>
@@ -127,7 +127,7 @@
         display correctly in the editor; the editor is single-instance and the
         applet gear focuses the open editor instead of opening duplicates.</p>
       </description>
-      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.1</url>
+      <url>https://github.com/vgxl/cosmic-ext-control-center/releases/tag/v0.1.1</url>
     </release>
     <release version="0.1.0" date="2026-06-12">
       <description>
@@ -135,7 +135,7 @@
         suite of built-in modules, light/dark theming, and a declarative RON
         plugin system.</p>
       </description>
-      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.0</url>
+      <url>https://github.com/vgxl/cosmic-ext-control-center/releases/tag/v0.1.0</url>
     </release>
   </releases>
 </component>

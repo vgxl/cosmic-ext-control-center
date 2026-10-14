@@ -3,6 +3,7 @@
 //! changes (add / remove / reorder) persist to cosmic-config immediately.
 
 use crate::config::{Config, InstanceConfig};
+use crate::inhibit::PreventSleep;
 use crate::module::manifest::{Manifest, ManifestModule};
 use crate::module::{
     ControlValue, GRID_GAP, GRID_UNIT, InstanceId, ListEntry, Module, ModuleDescriptor, Payload,
@@ -70,6 +71,9 @@ pub struct Hub {
     /// re-presented; a short redraw burst refreshes every buffer so no ghost
     /// of the previous layout lingers.
     redraw_until: Option<std::time::Instant>,
+    /// Held while "prevent sleep" is on: the logind idle inhibitor. Dropping it
+    /// — or the applet exiting — releases the lock.
+    prevent_sleep: Option<PreventSleep>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +111,10 @@ pub enum Message {
     StateBatch(Vec<(InstanceId, Payload)>),
     /// Periodic tick — refresh polled module state (e.g. manifest `get`s).
     Poll,
+    /// The audio mixer reported a change (a volume key, another app, COSMIC's
+    /// own sound settings), so the tiles that mirror it refresh now instead of
+    /// waiting for the next poll.
+    MixerChanged,
     /// ~60fps tick while a module is animating (drives the redraw; no-op state).
     Frame,
     /// A power/session action was pressed (may need confirmation first).
@@ -115,6 +123,9 @@ pub enum Message {
     PowerConfirm,
     /// Dismiss the pending power action.
     PowerCancel,
+    /// Toggle "prevent sleep" — the logind idle inhibitor next to the battery
+    /// readout. Holding it keeps the machine from suspending.
+    TogglePreventSleep,
     /// Launch the companion config app (the applet's gear, when editing is off).
     OpenConfig,
     /// (applet) A status source (D-Bus / pactl) reported new system state for
@@ -353,15 +364,19 @@ impl Hub {
     /// a settings/gear button (right) that currently doubles as the edit toggle.
     /// `＋ Add` joins it on the right while editing, grouping the edit controls.
     fn bottom_bar(&self) -> Element<'_, Message> {
-        let left: Element<'_, Message> = match self.battery {
-            Some((pct, charging)) => widget::Row::new()
-                .spacing(6)
-                .align_y(Alignment::Center)
-                .push(widget::icon::from_name(battery_icon(pct, charging)).size(18))
-                .push(widget::text::body(format!("{pct}%")))
-                .into(),
-            None => widget::Row::new().into(),
-        };
+        let mut left = widget::Row::new().spacing(10).align_y(Alignment::Center);
+        if let Some((pct, charging)) = self.battery {
+            left = left.push(
+                widget::Row::new()
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                    .push(widget::icon::from_name(battery_icon(pct, charging)).size(18))
+                    .push(widget::text::body(format!("{pct}%"))),
+            );
+        }
+        // "Prevent sleep" sits to the right of the power state.
+        left = left.push(self.prevent_sleep_button());
+        let left: Element<'_, Message> = left.into();
 
         let mut right = widget::Row::new().spacing(8).align_y(Alignment::Center);
         if self.edit {
@@ -389,6 +404,24 @@ impl Hub {
                     .push(widget::space::horizontal())
                     .push(right),
             )
+            .into()
+    }
+
+    /// The "prevent sleep" toggle beside the battery readout: a display glyph
+    /// (keep the screen and machine on), accent-filled while the logind
+    /// inhibitor is held. Not the moon — that reads as night light in COSMIC,
+    /// and the panel already owns that vocabulary.
+    fn prevent_sleep_button(&self) -> Element<'_, Message> {
+        let on = self.prevent_sleep.is_some();
+        widget::button::icon(
+            widget::icon::from_name("coffee-symbolic").size(20),
+        )
+            .class(if on {
+                cosmic::theme::Button::Suggested
+            } else {
+                cosmic::theme::Button::Icon
+            })
+            .on_press(Message::TogglePreventSleep)
             .into()
     }
 
@@ -591,7 +624,13 @@ impl Hub {
             settings_open: false,
             battery: read_battery(),
             redraw_until: None,
+            prevent_sleep: None,
         };
+        // Restore the "prevent sleep" toggle from config: re-acquire the
+        // inhibitors right here, so a restart doesn't silently drop them.
+        if hub.config.settings.prevent_sleep {
+            hub.prevent_sleep = crate::inhibit::acquire();
+        }
         hub.rebuild(allow_edit);
         hub
     }
@@ -1197,20 +1236,14 @@ impl Hub {
                 // Collect each module's off-thread fetch into one batch (applied
                 // together → a single repaint per poll). Sync, cheap modules
                 // (sysmon /proc) have no job and just update themselves in place.
-                let mut jobs = Vec::new();
-                for i in self.instances.iter_mut() {
-                    match i.module.fetch_job() {
-                        Some(job) => jobs.push((i.id, job)),
-                        None => {
-                            let _ = i.module.refresh(i.id);
-                        }
-                    }
-                }
                 self.battery = read_battery();
-                if jobs.is_empty() {
-                    return Task::none();
-                }
-                return builtin::poll_batch(jobs);
+                return self.poll_modules(false);
+            }
+            Message::MixerChanged => {
+                // The audio mixer reported a change — a volume key, another
+                // app, or COSMIC's own sound settings. Refresh the tiles that
+                // mirror it right away rather than on the next poll.
+                return self.poll_modules(true);
             }
             // The message itself drives a redraw; animated values interpolate
             // off the wall clock in their own view(). Also reap any tile whose
@@ -1232,6 +1265,18 @@ impl Hub {
                 }
             }
             Message::PowerCancel => self.pending_power = None,
+            // Hold (or release) the logind idle inhibitor. Dropping the value
+            // closes its connection + fd, which is what releases the lock.
+            Message::TogglePreventSleep => {
+                self.prevent_sleep = match self.prevent_sleep.take() {
+                    Some(_) => None,
+                    None => crate::inhibit::acquire(),
+                };
+                // Persist the toggle so the state survives applet restarts.
+                self.config.settings.prevent_sleep = self.prevent_sleep.is_some();
+                self.config.save();
+                self.bump_redraw();
+            }
             Message::Control(id, control, value) => {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
                     let task = inst.module.on_control(&control, value);
@@ -1278,6 +1323,12 @@ impl Hub {
         let mut subs = Vec::new();
         if !builtin::preview() {
             subs.push(time::every(Duration::from_secs(2)).map(|_| Message::Poll));
+            // A tile that mirrors the audio mixer (volume / microphone) is
+            // refreshed the moment the mixer reports a change, so a volume-key
+            // press shows up without waiting for the next poll.
+            if self.instances.iter().any(|i| i.module.follows_mixer()) {
+                subs.push(crate::mixer::subscription());
+            }
         }
         // Run frame ticks while something is animating OR a redraw burst is in
         // flight (after a layout-changing toggle) — idle hubs otherwise stay at
@@ -1295,6 +1346,28 @@ impl Hub {
 }
 
 impl Hub {
+    /// Refresh polled module state off-thread, batched into one repaint. With
+    /// `mixer_only`, only the tiles that mirror the audio mixer are refreshed —
+    /// the mixer-event path, where nothing else in the hub has changed.
+    fn poll_modules(&mut self, mixer_only: bool) -> Task<Message> {
+        let mut jobs = Vec::new();
+        for i in self.instances.iter_mut() {
+            if mixer_only && !i.module.follows_mixer() {
+                continue;
+            }
+            match i.module.fetch_job() {
+                Some(job) => jobs.push((i.id, job)),
+                None => {
+                    let _ = i.module.refresh(i.id);
+                }
+            }
+        }
+        if jobs.is_empty() {
+            return Task::none();
+        }
+        builtin::poll_batch(jobs)
+    }
+
     /// Schedule a brief redraw burst so a layout change fully repaints across
     /// all swapchain buffers (see `redraw_until`).
     fn bump_redraw(&mut self) {

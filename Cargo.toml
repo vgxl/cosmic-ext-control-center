@@ -33,6 +33,12 @@ tokio = { version = "1", features = ["rt"] }
 # Media module: D-Bus MPRIS via the blocking API (own internal executor, so it
 # doesn't fight cosmic's tokio runtime in the sync poll). image: decode artwork.
 zbus = "5"
+# Idle inhibit: the compositor (cosmic-comp) blanks the display on its own idle
+# timer and ignores logind inhibitors, so preventing screen-off needs the
+# zwp_idle_inhibit_unstable_v1 protocol on our own Wayland connection.
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [dependencies.libcosmic]
